@@ -1,0 +1,11 @@
+{
+  "appId": "com.spendly.app",
+  "appName": "Spendly",
+  "webDir": "assets",
+  "server": {
+    "androidScheme": "https"
+  },
+  "android": {
+    "allowMixedContent": true
+  }
+}
