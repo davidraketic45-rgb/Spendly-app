@@ -1876,8 +1876,12 @@ const BUILTIN = [
   {name:'Personal Care',    icon:'🪥'},
 ];
 
-let expenses   = JSON.parse(localStorage.getItem('spendly_v2_exp')  || '[]').map(e => ({...e, date: e.date ? (e.date.length > 10 ? new Date(e.date).toISOString().split('T')[0] : e.date) : ''}));
-let customCats = JSON.parse(localStorage.getItem('spendly_v2_cats') || '[]');
+let expenses = JSON.parse(localStorage.getItem('spendly_v2_exp') || '[]').map(e => ({
+  ...e,
+  date: e.date
+    ? (e.date.length > 10 ? e.date.substring(0, 10) : e.date)
+    : ''
+}));let customCats = JSON.parse(localStorage.getItem('spendly_v2_cats') || '[]');
 let offlineQueue = JSON.parse(localStorage.getItem('spendly_queue') || '[]');
 let isSyncing = false;
 
@@ -1949,19 +1953,28 @@ async function loadFromSheets() {
 // Normalize any date format to YYYY-MM-DD
 function normalizeDate(raw) {
   if (!raw) return '';
-  const s = String(raw);
-  // Already YYYY-MM-DD
+  const s = String(raw).trim();
+  // Already YYYY-MM-DD — return as-is
   if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
-  // Try parsing as date object
+  // ISO string with time e.g. "2025-03-09T00:00:00.000Z"
+  // Extract just the date part directly from string to avoid timezone conversion
+  if (/^\d{4}-\d{2}-\d{2}T/.test(s)) return s.substring(0, 10);
+  // Other formats — parse using local time parts
   const d = new Date(s);
-  if (!isNaN(d)) return d.toISOString().split('T')[0];
+  if (!isNaN(d)) {
+    const year  = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day   = String(d.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }
   return s;
 }
 
-// Safe date constructor — always produces valid Date from stored date string
+// Safe date constructor — uses local noon to avoid UTC timezone shift
 function parseDate(dateStr) {
   const clean = normalizeDate(dateStr);
-  return new Date(clean + 'T12:00:00');
+  const [y, m, d] = clean.split('-').map(Number);
+  return new Date(y, m - 1, d, 12, 0, 0);
 }
 
 async function flushQueue() {
