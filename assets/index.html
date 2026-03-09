@@ -2112,7 +2112,11 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('headerDate').innerHTML =
     now.toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric',year:'numeric'}) +
     '<br>' + now.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'});
-  document.getElementById('fDate').value = now.toISOString().split('T')[0];
+  // Use local date for default date value (not UTC via toISOString)
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  document.getElementById('fDate').value = `${y}-${m}-${d}`;
   populateCatSelects();
   buildFilterChips();
   renderSummary();
@@ -2353,8 +2357,8 @@ function renderLog() {
   );
 
   // Sort
-  if (sort === 'date-desc')        list.sort((a,b) => new Date(b.date) - new Date(a.date));
-  else if (sort === 'date-asc')    list.sort((a,b) => new Date(a.date) - new Date(b.date));
+  if (sort === 'date-desc')        list.sort((a,b) => parseDate(b.date) - parseDate(a.date));
+  else if (sort === 'date-asc')    list.sort((a,b) => parseDate(a.date) - parseDate(b.date));
   else if (sort === 'amount-desc') list.sort((a,b) => b.amount - a.amount);
   else if (sort === 'amount-asc')  list.sort((a,b) => a.amount - b.amount);
 
