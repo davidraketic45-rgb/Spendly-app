@@ -1596,9 +1596,9 @@ input[type=number] { -moz-appearance: textfield; }
     </div>
     <div class="sum-card">
       <div class="sum-stripe amber"></div>
-      <div class="sum-label">This Week</div>
+      <div class="sum-label">Today</div>
       <div class="sum-value" id="sumWeek">₹0.00</div>
-      <div class="sum-sub" id="sumWeekSub">0 this week</div>
+      <div class="sum-sub" id="sumWeekSub">0 today</div>
     </div>
     <div class="sum-card">
       <div class="sum-stripe teal"></div>
@@ -1799,10 +1799,7 @@ input[type=number] { -moz-appearance: textfield; }
       <div class="cat-grid" id="catGrid"></div>
       <div style="font-family:'JetBrains Mono',monospace;font-size:0.65rem;color:#8a9bbf;margin-bottom:12px;text-transform:uppercase;letter-spacing:1.5px">Add New Category</div>
       <div class="add-cat-row">
-        <div style="display:flex;gap:10px">
-          <input type="text" id="newCatEmoji" placeholder="Emoji (e.g. 🎮)" style="width:120px;flex-shrink:0">
-          <input type="text" id="newCatName" placeholder="Category name (e.g. Gaming)" style="flex:1">
-        </div>
+        <input type="text" id="newCatName" placeholder="Category name (e.g. Gaming)" style="flex:1">
         <button class="btn-sm" onclick="addCategory()">+ Add Category</button>
       </div>
     </div>
@@ -1933,19 +1930,25 @@ async function loadFromSheets() {
     const res = await fetch(SCRIPT_URL);
     const data = await res.json();
     if (data.status === 'ok') {
-      // Always overwrite local cache with Sheets data (source of truth)
       expenses = data.expenses.map(e => ({
         ...e,
         amount: parseFloat(e.amount),
         id: String(e.id),
         date: normalizeDate(e.date)
       }));
+      // Sync custom categories from Sheets
+      if (data.categories && data.categories.length > 0) {
+        customCats = data.categories;
+        localStorage.setItem('spendly_v2_cats', JSON.stringify(customCats));
+        populateCatSelects();
+        buildFilterChips();
+        renderCatGrid();
+      }
       saveLocal();
     }
     setSyncStatus('ok', 'Synced');
     await flushQueue();
   } catch(err) {
-    // Offline — normalize any cached dates just in case
     expenses = expenses.map(e => ({ ...e, date: normalizeDate(e.date) }));
     setSyncStatus('offline', 'Offline — using local data');
   }
@@ -2062,6 +2065,18 @@ window.addEventListener('online', () => {
 });
 window.addEventListener('offline', () => setSyncStatus('offline', 'Offline'));
 
+async function sheetAddCat(cat) {
+  const op = { action: 'addCat', category: cat };
+  if (!navigator.onLine) { offlineQueue.push(op); saveLocal(); return; }
+  try { await sheetsRequest(op); } catch(e) { offlineQueue.push(op); saveLocal(); }
+}
+
+async function sheetDeleteCat(name) {
+  const op = { action: 'deleteCat', name };
+  if (!navigator.onLine) { offlineQueue.push(op); saveLocal(); return; }
+  try { await sheetsRequest(op); } catch(e) { offlineQueue.push(op); saveLocal(); }
+}
+
 
 // ── LOADER ───────────────────────────────────────
 function showLoader(msg = 'Saving…') {
@@ -2136,7 +2151,7 @@ function populateCatSelects() {
     const sel = document.getElementById(id);
     if (!sel) return;
     const cur = sel.value;
-    sel.innerHTML = allCats().map(c => `<option value="${c.name}">${c.icon} ${c.name}</option>`).join('');
+    sel.innerHTML = allCats().map(c => `<option value="${c.name}">${c.name}</option>`).join('');
     if (cur) sel.value = cur;
   });
 }
@@ -2145,7 +2160,6 @@ function renderCatGrid() {
   document.getElementById('catGrid').innerHTML = allCats().map((c, i) => {
     const isBuiltin = i < BUILTIN.length;
     return `<div class="cat-chip">
-      <span>${c.icon}</span>
       <span>${c.name}</span>
       ${!isBuiltin ? `<button class="chip-del" onclick="deleteCat('${c.name.replace(/'/g,"\\'")}')">✕</button>` : ''}
     </div>`;
@@ -2153,23 +2167,24 @@ function renderCatGrid() {
 }
 
 function addCategory() {
-  const emoji = document.getElementById('newCatEmoji').value.trim() || '📦';
-  const name  = document.getElementById('newCatName').value.trim();
+  const name = document.getElementById('newCatName').value.trim();
   if (!name) { toast('Enter a category name'); return; }
   if (allCats().find(c => c.name.toLowerCase() === name.toLowerCase())) { toast('Category already exists'); return; }
-  customCats.push({name, icon: emoji});
+  const cat = {name, icon: '📦'};
+  customCats.push(cat);
   save();
+  sheetAddCat(cat);
   populateCatSelects();
   renderCatGrid();
   buildFilterChips();
-  document.getElementById('newCatEmoji').value = '';
-  document.getElementById('newCatName').value  = '';
+  document.getElementById('newCatName').value = '';
   toast('Category added ✓');
 }
 
 function deleteCat(name) {
   customCats = customCats.filter(c => c.name !== name);
   save();
+  sheetDeleteCat(name);
   populateCatSelects();
   renderCatGrid();
   buildFilterChips();
@@ -2248,11 +2263,10 @@ function addExpense() {
 function renderSummary() {
   const total = expenses.reduce((s, e) => s + e.amount, 0);
   const today = todayStr();
-  const thisMonth  = today.substring(0, 7); // YYYY-MM
-  const thisWeekStart = weekStartStr();
+  const thisMonth = today.substring(0, 7);
 
   const monthExp = expenses.filter(e => normalizeDate(e.date).startsWith(thisMonth));
-  const weekExp  = expenses.filter(e => normalizeDate(e.date) >= thisWeekStart && normalizeDate(e.date) <= today);
+  const todayExp  = expenses.filter(e => normalizeDate(e.date) === today);
 
   const sorted = [...expenses].sort((a,b) => normalizeDate(a.date).localeCompare(normalizeDate(b.date)));
   const days = expenses.length
@@ -2263,8 +2277,8 @@ function renderSummary() {
   document.getElementById('sumTxCount').textContent  = expenses.length + ' transaction' + (expenses.length !== 1 ? 's' : '');
   document.getElementById('sumMonth').textContent    = fmt(monthExp.reduce((s,e)=>s+e.amount,0));
   document.getElementById('sumMonthSub').textContent = monthExp.length + ' this month';
-  document.getElementById('sumWeek').textContent     = fmt(weekExp.reduce((s,e)=>s+e.amount,0));
-  document.getElementById('sumWeekSub').textContent  = weekExp.length + ' this week';
+  document.getElementById('sumWeek').textContent     = fmt(todayExp.reduce((s,e)=>s+e.amount,0));
+  document.getElementById('sumWeekSub').textContent  = todayExp.length + ' transaction' + (todayExp.length !== 1 ? 's' : '');
   document.getElementById('sumAvg').textContent      = fmt(total / days);
 }
 
@@ -2273,7 +2287,7 @@ function buildFilterChips() {
   const cats = ['All', ...allCats().map(c => c.name)];
   document.getElementById('filterChips').innerHTML = cats.map(c =>
     `<button class="fchip ${c === activeFilter ? 'active' : ''}" onclick="setFilter('${c.replace(/'/g,"\\'")}', this)">
-      ${c === 'All' ? 'All' : catIcon(c) + ' ' + c}
+      ${c === 'All' ? 'All' : c}
     </button>`
   ).join('');
 }
