@@ -1596,9 +1596,9 @@ input[type=number] { -moz-appearance: textfield; }
     </div>
     <div class="sum-card">
       <div class="sum-stripe amber"></div>
-      <div class="sum-label">This Week</div>
+      <div class="sum-label">Today</div>
       <div class="sum-value" id="sumWeek">₹0.00</div>
-      <div class="sum-sub" id="sumWeekSub">0 this week</div>
+      <div class="sum-sub" id="sumWeekSub">0 today</div>
     </div>
     <div class="sum-card">
       <div class="sum-stripe teal"></div>
@@ -1799,10 +1799,7 @@ input[type=number] { -moz-appearance: textfield; }
       <div class="cat-grid" id="catGrid"></div>
       <div style="font-family:'JetBrains Mono',monospace;font-size:0.65rem;color:#8a9bbf;margin-bottom:12px;text-transform:uppercase;letter-spacing:1.5px">Add New Category</div>
       <div class="add-cat-row">
-        <div style="display:flex;gap:10px">
-          <input type="text" id="newCatEmoji" placeholder="Emoji (e.g. 🎮)" style="width:120px;flex-shrink:0">
-          <input type="text" id="newCatName" placeholder="Category name (e.g. Gaming)" style="flex:1">
-        </div>
+        <input type="text" id="newCatName" placeholder="Category name (e.g. Gaming)" style="flex:1">
         <button class="btn-sm" onclick="addCategory()">+ Add Category</button>
       </div>
     </div>
@@ -1932,18 +1929,27 @@ async function loadFromSheets() {
     setSyncStatus('syncing', 'Loading…');
     const res = await fetch(SCRIPT_URL);
     const data = await res.json();
-    if (data.status === 'ok' && data.expenses.length > 0) {
+    if (data.status === 'ok') {
       expenses = data.expenses.map(e => ({
         ...e,
         amount: parseFloat(e.amount),
         id: String(e.id),
         date: normalizeDate(e.date)
       }));
+      // Sync custom categories from Sheets
+      if (data.categories && data.categories.length > 0) {
+        customCats = data.categories;
+        localStorage.setItem('spendly_v2_cats', JSON.stringify(customCats));
+        populateCatSelects();
+        buildFilterChips();
+        renderCatGrid();
+      }
       saveLocal();
     }
     setSyncStatus('ok', 'Synced');
     await flushQueue();
   } catch(err) {
+    expenses = expenses.map(e => ({ ...e, date: normalizeDate(e.date) }));
     setSyncStatus('offline', 'Offline — using local data');
   }
   renderSummary();
@@ -2059,6 +2065,18 @@ window.addEventListener('online', () => {
 });
 window.addEventListener('offline', () => setSyncStatus('offline', 'Offline'));
 
+async function sheetAddCat(cat) {
+  const op = { action: 'addCat', category: cat };
+  if (!navigator.onLine) { offlineQueue.push(op); saveLocal(); return; }
+  try { await sheetsRequest(op); } catch(e) { offlineQueue.push(op); saveLocal(); }
+}
+
+async function sheetDeleteCat(name) {
+  const op = { action: 'deleteCat', name };
+  if (!navigator.onLine) { offlineQueue.push(op); saveLocal(); return; }
+  try { await sheetsRequest(op); } catch(e) { offlineQueue.push(op); saveLocal(); }
+}
+
 
 // ── LOADER ───────────────────────────────────────
 function showLoader(msg = 'Saving…') {
@@ -2117,6 +2135,9 @@ document.addEventListener('DOMContentLoaded', () => {
   const m = String(now.getMonth() + 1).padStart(2, '0');
   const d = String(now.getDate()).padStart(2, '0');
   document.getElementById('fDate').value = `${y}-${m}-${d}`;
+  // Normalize any stale dates in localStorage (fix timezone-shifted dates)
+  expenses = expenses.map(e => ({ ...e, date: normalizeDate(e.date) }));
+  saveLocal();
   populateCatSelects();
   buildFilterChips();
   renderSummary();
@@ -2130,7 +2151,7 @@ function populateCatSelects() {
     const sel = document.getElementById(id);
     if (!sel) return;
     const cur = sel.value;
-    sel.innerHTML = allCats().map(c => `<option value="${c.name}">${c.icon} ${c.name}</option>`).join('');
+    sel.innerHTML = allCats().map(c => `<option value="${c.name}">${c.name}</option>`).join('');
     if (cur) sel.value = cur;
   });
 }
@@ -2139,7 +2160,6 @@ function renderCatGrid() {
   document.getElementById('catGrid').innerHTML = allCats().map((c, i) => {
     const isBuiltin = i < BUILTIN.length;
     return `<div class="cat-chip">
-      <span>${c.icon}</span>
       <span>${c.name}</span>
       ${!isBuiltin ? `<button class="chip-del" onclick="deleteCat('${c.name.replace(/'/g,"\\'")}')">✕</button>` : ''}
     </div>`;
@@ -2147,23 +2167,24 @@ function renderCatGrid() {
 }
 
 function addCategory() {
-  const emoji = document.getElementById('newCatEmoji').value.trim() || '📦';
-  const name  = document.getElementById('newCatName').value.trim();
+  const name = document.getElementById('newCatName').value.trim();
   if (!name) { toast('Enter a category name'); return; }
   if (allCats().find(c => c.name.toLowerCase() === name.toLowerCase())) { toast('Category already exists'); return; }
-  customCats.push({name, icon: emoji});
+  const cat = {name, icon: '📦'};
+  customCats.push(cat);
   save();
+  sheetAddCat(cat);
   populateCatSelects();
   renderCatGrid();
   buildFilterChips();
-  document.getElementById('newCatEmoji').value = '';
-  document.getElementById('newCatName').value  = '';
+  document.getElementById('newCatName').value = '';
   toast('Category added ✓');
 }
 
 function deleteCat(name) {
   customCats = customCats.filter(c => c.name !== name);
   save();
+  sheetDeleteCat(name);
   populateCatSelects();
   renderCatGrid();
   buildFilterChips();
@@ -2240,29 +2261,24 @@ function addExpense() {
 
 // ── SUMMARY ──────────────────────────────────────
 function renderSummary() {
-  const now  = new Date();
   const total = expenses.reduce((s, e) => s + e.amount, 0);
+  const today = todayStr();
+  const thisMonth = today.substring(0, 7);
 
-  const monthExp = expenses.filter(e => {
-    const d = parseDate(e.date);
-    return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth();
-  });
+  const monthExp = expenses.filter(e => normalizeDate(e.date).startsWith(thisMonth));
+  const todayExp  = expenses.filter(e => normalizeDate(e.date) === today);
 
-  const weekStart = new Date(now);
-  weekStart.setDate(now.getDate() - now.getDay());
-  weekStart.setHours(0,0,0,0);
-  const weekExp = expenses.filter(e => parseDate(e.date) >= weekStart);
-
+  const sorted = [...expenses].sort((a,b) => normalizeDate(a.date).localeCompare(normalizeDate(b.date)));
   const days = expenses.length
-    ? Math.max(1, Math.ceil((now - parseDate(expenses[expenses.length-1].date)) / 86400000) + 1)
+    ? Math.max(1, Math.ceil((new Date(todayStr()) - new Date(normalizeDate(sorted[0].date))) / 86400000) + 1)
     : 1;
 
   document.getElementById('sumTotal').textContent    = fmt(total);
   document.getElementById('sumTxCount').textContent  = expenses.length + ' transaction' + (expenses.length !== 1 ? 's' : '');
   document.getElementById('sumMonth').textContent    = fmt(monthExp.reduce((s,e)=>s+e.amount,0));
   document.getElementById('sumMonthSub').textContent = monthExp.length + ' this month';
-  document.getElementById('sumWeek').textContent     = fmt(weekExp.reduce((s,e)=>s+e.amount,0));
-  document.getElementById('sumWeekSub').textContent  = weekExp.length + ' this week';
+  document.getElementById('sumWeek').textContent     = fmt(todayExp.reduce((s,e)=>s+e.amount,0));
+  document.getElementById('sumWeekSub').textContent  = todayExp.length + ' transaction' + (todayExp.length !== 1 ? 's' : '');
   document.getElementById('sumAvg').textContent      = fmt(total / days);
 }
 
@@ -2271,7 +2287,7 @@ function buildFilterChips() {
   const cats = ['All', ...allCats().map(c => c.name)];
   document.getElementById('filterChips').innerHTML = cats.map(c =>
     `<button class="fchip ${c === activeFilter ? 'active' : ''}" onclick="setFilter('${c.replace(/'/g,"\\'")}', this)">
-      ${c === 'All' ? 'All' : catIcon(c) + ' ' + c}
+      ${c === 'All' ? 'All' : c}
     </button>`
   ).join('');
 }
@@ -2296,25 +2312,36 @@ function setDateFilter(val, el) {
   renderLog();
 }
 
-function getDateRange() {
-  const now = new Date();
-  now.setHours(23, 59, 59, 999);
-  let from = null, to = now;
+function todayStr() {
+  const n = new Date();
+  return `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}-${String(n.getDate()).padStart(2,'0')}`;
+}
 
-  if (activeDateFilter === 'week') {
-    from = new Date();
-    from.setDate(from.getDate() - from.getDay());
-    from.setHours(0, 0, 0, 0);
-  } else if (activeDateFilter === 'month') {
-    from = new Date(now.getFullYear(), now.getMonth(), 1);
-  } else if (activeDateFilter === 'quarter') {
-    const q = Math.floor(now.getMonth() / 3);
-    from = new Date(now.getFullYear(), q * 3, 1);
-  } else if (activeDateFilter === 'custom') {
-    const f = document.getElementById('dateFrom')?.value;
-    const t = document.getElementById('dateTo')?.value;
-    from = f ? new Date(f + 'T00:00:00') : null;
-    to   = t ? new Date(t + 'T23:59:59') : now;
+function weekStartStr() {
+  const n = new Date();
+  n.setDate(n.getDate() - n.getDay());
+  return `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}-${String(n.getDate()).padStart(2,'0')}`;
+}
+
+function monthStartStr() {
+  const n = new Date();
+  return `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}-01`;
+}
+
+function quarterStartStr() {
+  const n = new Date();
+  const q = Math.floor(n.getMonth() / 3);
+  return `${n.getFullYear()}-${String(q*3+1).padStart(2,'0')}-01`;
+}
+
+function getDateRange() {
+  let from = null, to = todayStr();
+  if (activeDateFilter === 'week')    from = weekStartStr();
+  else if (activeDateFilter === 'month')   from = monthStartStr();
+  else if (activeDateFilter === 'quarter') from = quarterStartStr();
+  else if (activeDateFilter === 'custom') {
+    from = document.getElementById('dateFrom')?.value || null;
+    to   = document.getElementById('dateTo')?.value || todayStr();
   }
   return { from, to };
 }
@@ -2334,11 +2361,11 @@ function renderLog() {
 
   let list = [...expenses];
 
-  // Date range filter
-  const { from, to } = getDateRange();
+  // Date range filter — compare YYYY-MM-DD strings directly
   if (activeDateFilter !== 'all') {
+    const { from, to } = getDateRange();
     list = list.filter(e => {
-      const d = parseDate(e.date);
+      const d = normalizeDate(e.date);
       if (from && d < from) return false;
       if (to   && d > to)   return false;
       return true;
@@ -2356,9 +2383,9 @@ function renderLog() {
     e.payment.toLowerCase().includes(search)
   );
 
-  // Sort
-  if (sort === 'date-desc')        list.sort((a,b) => parseDate(b.date) - parseDate(a.date));
-  else if (sort === 'date-asc')    list.sort((a,b) => parseDate(a.date) - parseDate(b.date));
+  // Sort — compare strings directly
+  if (sort === 'date-desc')        list.sort((a,b) => normalizeDate(b.date).localeCompare(normalizeDate(a.date)));
+  else if (sort === 'date-asc')    list.sort((a,b) => normalizeDate(a.date).localeCompare(normalizeDate(b.date)));
   else if (sort === 'amount-desc') list.sort((a,b) => b.amount - a.amount);
   else if (sort === 'amount-asc')  list.sort((a,b) => a.amount - b.amount);
 
@@ -2508,20 +2535,13 @@ function setInsightFilter(val, el) {
 }
 
 function getInsightDateRange() {
-  const now = new Date(); now.setHours(23,59,59,999);
-  let from = null, to = now;
-  if (activeInsightFilter === 'week') {
-    from = new Date(); from.setDate(from.getDate() - from.getDay()); from.setHours(0,0,0,0);
-  } else if (activeInsightFilter === 'month') {
-    from = new Date(now.getFullYear(), now.getMonth(), 1);
-  } else if (activeInsightFilter === 'quarter') {
-    const q = Math.floor(now.getMonth() / 3);
-    from = new Date(now.getFullYear(), q * 3, 1);
-  } else if (activeInsightFilter === 'custom') {
-    const f = document.getElementById('insDateFrom')?.value;
-    const t = document.getElementById('insDateTo')?.value;
-    from = f ? new Date(f + 'T00:00:00') : null;
-    to   = t ? new Date(t + 'T23:59:59') : now;
+  let from = null, to = todayStr();
+  if (activeInsightFilter === 'week')         from = weekStartStr();
+  else if (activeInsightFilter === 'month')   from = monthStartStr();
+  else if (activeInsightFilter === 'quarter') from = quarterStartStr();
+  else if (activeInsightFilter === 'custom') {
+    from = document.getElementById('insDateFrom')?.value || null;
+    to   = document.getElementById('insDateTo')?.value || todayStr();
   }
   return { from, to };
 }
@@ -2530,7 +2550,7 @@ function filterExpensesByInsightDate() {
   if (activeInsightFilter === 'all') return [...expenses];
   const { from, to } = getInsightDateRange();
   return expenses.filter(e => {
-    const d = parseDate(e.date);
+    const d = normalizeDate(e.date);
     if (from && d < from) return false;
     if (to   && d > to)   return false;
     return true;
